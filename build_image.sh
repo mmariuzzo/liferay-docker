@@ -16,7 +16,7 @@ function configure_tomcat {
 	printf "\nCATALINA_OPTS=\"\${CATALINA_OPTS} \${LIFERAY_JVM_OPTS}\"" >> ${1}/liferay/tomcat-${2}/bin/setenv.sh
 }
 
-function date {
+function date2 {
 	if [ -z ${1+x} ] || [ -z ${2+x} ]
 	then
 		if [ "$(uname)" == "Darwin" ]
@@ -64,15 +64,22 @@ function get_tomcat_version {
 }
 
 function main {
-	check_utils 7z curl docker java unzip
+	check_utils 7za curl docker java unzip
+
+	echo "Using"
+	echo "\$LIFERAY_DOCKER_LICENSE_FILE=$LIFERAY_DOCKER_LICENSE_FILE"
+	echo "\$LIFERAY_DOCKER_FIXPACK_FOLDER=$LIFERAY_DOCKER_FIXPACK_FOLDER"
+	echo "\$LIFERAY_DOCKER_PATCHING_TOOL=$LIFERAY_DOCKER_PATCHING_TOOL"
+	echo "\$LIFERAY_DOCKER_CUSTOM_RELEASE=$LIFERAY_DOCKER_CUSTOM_RELEASE"
+	echo " "
 
 	#
 	# Make temporary directory.
 	#
 
-	local current_date=$(date)
+	local current_date=$(date "+%Y-%m-%dT%H:%M:%SZ")
 
-	local timestamp=$(date "${current_date}" "+%Y%m%d%H%M")
+	local timestamp=$(date "+%Y%m%d%H%M")
 
 	mkdir -p ${timestamp}
 
@@ -112,7 +119,7 @@ function main {
 
 	if [[ ${release_file_name} == *.7z ]]
 	then
-		7z x -O${timestamp} ${release_dir}/${release_file_name}
+		7za x -O${timestamp} ${release_dir}/${release_file_name}
 	else
 		unzip -q ${release_dir}/${release_file_name} -d ${timestamp}
 	fi
@@ -140,7 +147,13 @@ function main {
 
 	if [[ ${release_file_name} == *-dxp-* ]]
 	then
-		if [ -z "${LIFERAY_DOCKER_LICENSE_CMD}" ]
+		if [ -n "${LIFERAY_DOCKER_LICENSE_FILE}" -a -f ${LIFERAY_DOCKER_LICENSE_FILE} ]
+		then
+			mkdir -p ${timestamp}/liferay/osgi/modules
+
+			cp -v ${LIFERAY_DOCKER_LICENSE_FILE} ${timestamp}/liferay/osgi/modules
+
+		elif [ -z "${LIFERAY_DOCKER_LICENSE_CMD}" ]
 		then
 			echo "Please set the environment variable LIFERAY_DOCKER_LICENSE_CMD to generate a trial DXP license."
 
@@ -171,6 +184,43 @@ function main {
 			fi
 		fi
 	fi
+
+	#
+	# Run Patching Tool
+	#
+	if [[ ${release_file_name} == *-dxp-* ]]
+	then
+		if [ -n "${LIFERAY_DOCKER_PATCHING_TOOL}" -a -f ${LIFERAY_DOCKER_PATCHING_TOOL} ]
+		then
+			echo "Update Pathing tool: ${LIFERAY_DOCKER_PATCHING_TOOL}"
+
+			mv ${timestamp}/liferay/patching-tool ${timestamp}/liferay/patching-tool.old
+
+			unzip -q ${LIFERAY_DOCKER_PATCHING_TOOL} -d ${timestamp}/liferay
+
+			cp ${timestamp}/liferay/patching-tool.old/default.properties ${timestamp}/liferay/patching-tool
+
+			cp -v ${timestamp}/liferay/patching-tool.old/patches/*.zip ${timestamp}/liferay/patching-tool/patches
+
+			rm -rf ${timestamp}/liferay/patching-tool.old
+		else
+			echo "Use LIFERAY_DOCKER_PATCHING_TOOL environment to point a new PatchingTool distribution"
+		fi
+
+		if [ -n "${LIFERAY_DOCKER_FIXPACK_FOLDER}" -a -d ${LIFERAY_DOCKER_FIXPACK_FOLDER} ]
+		then
+			echo "Run Patching Tool"
+
+			cp -v ${LIFERAY_DOCKER_FIXPACK_FOLDER}/*.zip ${timestamp}/liferay/patching-tool/patches
+
+			chmod +x ${timestamp}/liferay/patching-tool/patching-tool.sh
+
+			bash ${timestamp}/liferay/patching-tool/patching-tool.sh install
+		else
+			echo "Set LIFERAY_DOCKER_FIXPACK_FOLDER environment to set folder with FixPack or HotFix to install"
+		fi
+	fi
+
 
 	#
 	# Build Docker image.
@@ -235,6 +285,14 @@ function main {
 		docker_image_tags+=("liferay/${docker_image_name}:${release_branch}-${release_version}-${release_hash}")
 		docker_image_tags+=("liferay/${docker_image_name}:${release_branch}-$(date "${current_date}" "+%Y%m%d")")
 		docker_image_tags+=("liferay/${docker_image_name}:${release_branch}")
+
+	elif [ -n "${LIFERAY_DOCKER_CUSTOM_RELEASE}" ]
+	then
+		echo "Use custom release version ${LIFERAY_DOCKER_CUSTOM_RELEASE}"
+
+		docker_image_tags+=("liferay/${docker_image_name}:${LIFERAY_DOCKER_CUSTOM_RELEASE}-${timestamp}")
+		docker_image_tags+=("liferay/${docker_image_name}:${LIFERAY_DOCKER_CUSTOM_RELEASE}")
+
 	else
 		docker_image_tags+=("liferay/${docker_image_name}:${release_version}-${timestamp}")
 		docker_image_tags+=("liferay/${docker_image_name}:${release_version}")
@@ -248,7 +306,7 @@ function main {
 	done
 
 	docker build \
-		--build-arg LABEL_BUILD_DATE=$(date "${current_date}" "+%Y-%m-%dT%H:%M:%SZ") \
+		--build-arg LABEL_BUILD_DATE="${current_date}" \
 		--build-arg LABEL_NAME="${label_name}" \
 		--build-arg LABEL_VCS_REF=$(git rev-parse HEAD) \
 		--build-arg LABEL_VERSION="${label_version}" \
@@ -262,7 +320,10 @@ function main {
 
 	for docker_image_tag in "${docker_image_tags[@]}"
 	do
-		docker push ${docker_image_tag}
+		echo "**"
+		echo "** Docker Push Disabled "
+		echo "**"
+		#docker push ${docker_image_tag}
 	done
 
 	#
@@ -284,11 +345,35 @@ function start_tomcat {
 
 	./${timestamp}/liferay/tomcat-*/bin/catalina.sh stop
 
-	sleep 10
+	local kill_tries=5
+	local tries=0
+	while [ "$(running_tomcat)" -ge 1 ]
+	do
+		sleep 5
+
+		if [ $kill_tries -gt 0 ]
+		then
+			tries=$((tries+1))
+			if [ $tries -ge $kill_tries ]
+			then
+				P=$(running_tomcat_pid)
+
+				kill -9 $P
+			fi
+		fi
+	done
 
 	rm -fr ${timestamp}/liferay/data/osgi/state
 	rm -fr ${timestamp}/liferay/osgi/state
 	rm -fr ${timestamp}/liferay/tomcat-*/logs/*
+}
+
+function running_tomcat {
+    ps -C java -f | grep -c ${timestamp}/liferay/tomcat-*/bin
+}
+
+function running_tomcat_pid {
+    ps -C java -f | grep ${timestamp}/liferay/tomcat-*/bin | while read a b c; do echo -e "$b \c"; done
 }
 
 function stat {
