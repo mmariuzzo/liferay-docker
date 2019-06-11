@@ -211,6 +211,11 @@ function main {
 		then
 			echo "Run Patching Tool"
 
+			if [ -f ${LIFERAY_DOCKER_FIXPACK_FOLDER}/module-mapping.txt ]
+			then
+				cp -v ${LIFERAY_DOCKER_FIXPACK_FOLDER}/module-mapping.txt ${timestamp}/liferay/patching-tool
+			fi
+
 			cp -v ${LIFERAY_DOCKER_FIXPACK_FOLDER}/*.zip ${timestamp}/liferay/patching-tool/patches
 
 			chmod +x ${timestamp}/liferay/patching-tool/patching-tool.sh

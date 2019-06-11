@@ -47,6 +47,8 @@ You have to:
 
 * grab the required fixpack from Liferay site and place inside that folder. Actually we have only ```liferay-fix-pack-dxp-11-7110.zip```.
 
+* grab the file [module-mapping.txt](https://files.liferay.com/public/support/7.1/module-mapping.txt) and place it inside that folder 
+
 * set the required environment variables
 
   ```console
